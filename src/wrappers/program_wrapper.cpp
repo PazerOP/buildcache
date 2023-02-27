@@ -67,6 +67,14 @@ bool program_wrapper_t::handle_command(int& return_code) {
     resolve_args();
     PERF_STOP(RESOLVE_ARGS);
 
+    {
+      std::string argsFlattened;
+      for (const auto& arg : m_args)
+        argsFlattened += " \"" + arg + "\"";
+
+      debug::log(debug::DEBUG) << "Resolved args: " << argsFlattened;
+    }
+
     // Get wrapper capabilities.
     PERF_START(GET_CAPABILITIES);
     m_active_capabilities = capabilities_t(get_capabilities());
@@ -90,22 +98,26 @@ bool program_wrapper_t::handle_command(int& return_code) {
 
     // Hash the program identification (version string or similar).
     PERF_START(GET_PRG_ID);
-    hasher.update(get_program_id_cached());
+    const auto program_id = get_program_id_cached();
+    hasher.update(program_id);
     PERF_STOP(GET_PRG_ID);
 
     // Hash the (filtered) command line flags and environment variables.
     PERF_START(FILTER_ARGS);
-    hasher.update(get_relevant_arguments());
-    hasher.update(get_relevant_env_vars());
+    const auto relevant_arguments = get_relevant_arguments();
+    hasher.update(relevant_arguments);
+    const auto relevant_env_vars = get_relevant_env_vars();
+    hasher.update(relevant_env_vars);
     PERF_STOP(FILTER_ARGS);
 
     // This string will be non-empty if we are able to create a direct mode cache lookup hash. If we
     // have a miss in the DM cache, this will be used for creating the DM cache entry.
     std::string direct_hash;
 
+    string_list_t input_files;
     if (m_active_capabilities.direct_mode()) {
       try {
-        const auto input_files = get_input_files();
+        input_files = get_input_files();
         if (input_files.size() > 0) {
           // The hash so far is common for direct mode and preprocessor mode. Make a copy and inject
           // a separator sequence to ensure that there can not be any collisions between direct mode
@@ -151,7 +163,8 @@ bool program_wrapper_t::handle_command(int& return_code) {
 
     // Hash the preprocessed file contents.
     PERF_START(PREPROCESS);
-    hasher.update(preprocess_source());
+    const auto preprocessed_source = preprocess_source();
+    hasher.update(preprocessed_source);
     PERF_STOP(PREPROCESS);
 
     // Finalize the hash.
@@ -168,11 +181,16 @@ bool program_wrapper_t::handle_command(int& return_code) {
         m_cache.add_direct(direct_hash, hash, get_implicit_input_files());
       }
 
-      debug::log(debug::INFO) << "Cache hit (" << hash << ")";
+      debug::log(debug::INFO) << "Cache hit (" << hash << ") on " << input_files.join(" ");
       return true;
     }
 
-    debug::log(debug::INFO) << "Cache miss (" << hash << ")";
+    debug::log(debug::INFO) << "Cache miss (" << hash << ", "
+                            << hasher_t::single(program_id).as_string() << ", "
+                            << hasher_t::single(relevant_arguments).as_string() << ", "
+                            << hasher_t::single(relevant_env_vars).as_string() << ", "
+                            << hasher_t::single(preprocessed_source).as_string() << " on "
+                            << input_files.join(" ");
 
     // If the "terminate on a miss" mode is enabled and we didn't find an entry in the cache, we
     // exit with an error code.
@@ -218,6 +236,9 @@ bool program_wrapper_t::handle_command(int& return_code) {
         // Add a direct mode cache entry.
         m_cache.add_direct(direct_hash, hash, get_implicit_input_files());
       }
+    } else {
+      debug::log(debug::WARNING) << "Not adding cache entry (" << hash
+                              << "), program exited with code " << result.return_code << ".";
     }
 
     // Everything's ok!
@@ -226,7 +247,7 @@ bool program_wrapper_t::handle_command(int& return_code) {
     return_code = result.return_code;
     return true;
   } catch (std::exception& e) {
-    debug::log(debug::DEBUG) << "Exception: " << e.what();
+    debug::log(debug::WARNING) << "Exception: " << e.what();
   } catch (...) {
     // Catch-all in order to not propagate exceptions any higher up (we'll return false).
     debug::log(debug::ERROR) << "UNEXPECTED EXCEPTION";

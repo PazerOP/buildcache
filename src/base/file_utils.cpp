@@ -29,6 +29,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <filesystem>
 #include <stdexcept>
 #include <vector>
 
@@ -802,7 +803,18 @@ std::string read(const std::string& path) {
 #ifdef _WIN32
   const auto err = _wfopen_s(&f, utf8_to_ucs2(path).c_str(), L"rb");
   if (err != 0) {
-    throw std::runtime_error("Unable to open the file.");
+    std::string errMsg = "Unable to open the file (";
+    errMsg += path;
+    errMsg += "): ";
+    errMsg += std::to_string(err);
+    errMsg += ": ";
+    
+    char buf[1024];
+    strerror_s(buf, err);
+    buf[sizeof(buf) - 1] = 0;
+    errMsg += buf;
+
+    throw std::runtime_error(errMsg);
   }
 #else
   f = std::fopen(path.c_str(), "rb");
@@ -946,9 +958,11 @@ void append(const std::string& data, const std::string& path) {
 
 file_info_t get_file_info(const std::string& path) {
   // TODO(m): This is pretty much copy-paste from walk_directory(). Refactor.
+  const std::string absPath = std::filesystem::absolute(path).string();
+
 #ifdef _WIN32
   WIN32_FIND_DATAW find_data;
-  auto* find_handle = FindFirstFileW(utf8_to_ucs2(path).c_str(), &find_data);
+  auto* find_handle = FindFirstFileW(utf8_to_ucs2(absPath).c_str(), &find_data);
   if (find_handle != INVALID_HANDLE_VALUE) {
     const auto name = ucs2_to_utf8(std::wstring(&find_data.cFileName[0]));
     const auto file_path = append_path(path, name);
@@ -967,6 +981,16 @@ file_info_t get_file_info(const std::string& path) {
     const uint64_t inode = 0U;
     return file_info_t(file_path, modify_time, access_time, size, inode, is_dir);
   }
+  //const std::filesystem::path fsPath = path;
+  //const auto absPath = std::filesystem::absolute(fsPath);
+
+  //const auto size = std::filesystem::file_size(fsPath);
+  //const auto modifyTime = std::filesystem::last_write_time(fsPath)
+
+  //  return file_info_t(absPath.string(), ;
+
+  //  std::filesystem::file_size()
+
 #else
   struct stat file_stat;
   const bool stat_ok = (stat(path.c_str(), &file_stat) == 0);
@@ -992,7 +1016,7 @@ file_info_t get_file_info(const std::string& path) {
   }
 #endif
 
-  throw std::runtime_error("Unable to get file information.");
+  throw std::runtime_error(std::string("Unable to get file information from \"") + absPath + "\".");
 }
 
 std::string human_readable_size(const int64_t byte_size) {

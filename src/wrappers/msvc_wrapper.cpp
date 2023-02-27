@@ -32,6 +32,15 @@
 #include <regex>
 #include <set>
 #include <stdexcept>
+#include <filesystem>
+
+using namespace std::string_literals;
+
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN 1
+#include <Windows.h>
+#undef STRICT
+#endif
 
 namespace bcache {
 namespace {
@@ -63,6 +72,30 @@ bool arg_equals(const std::string& str, const std::string& sub_str) {
   const auto size = sub_str.size();
   const auto is_flag = (size >= 1) && ((str[0] == '/') || (str[0] == '-'));
   return is_flag && ((str.size() >= (size + 1)) && (str.substr(1) == sub_str));
+}
+
+void resolve_env_vars(std::string& input) {
+#ifdef _WIN32
+  if (input.size() == 0 || input.find('%') == std::string::npos)
+    return;
+
+  auto wInput = utf8_to_ucs2(input);
+
+  wchar_t buf[32768];
+  DWORD outputChars = ExpandEnvironmentStringsW(wInput.c_str(), buf, std::size(buf));
+  if (outputChars == 0)
+    throw std::runtime_error(std::string("Failed to expand environment vars in string: \"") +
+                             input + "\"");
+
+  auto bufEnd = buf + outputChars;
+  if (bufEnd > 0)
+    bufEnd -= 1;  // Includes the terminating null char which we don't want
+
+  auto expandedInput = ucs2_to_utf8(buf, bufEnd);
+  debug::log(debug::DEBUG) << "Expanded environment vars in " << std::quoted(input) << " to "
+                           << std::quoted(expandedInput);
+  input = std::move(expandedInput);
+#endif
 }
 
 // Apparently some cl.exe arguments can be specified with an optional colon separator (e.g.
@@ -119,6 +152,58 @@ string_list_t make_preprocessor_cmd(const string_list_t& args, bool use_direct_m
   }
 
   return preprocess_args;
+}
+
+std::string try_get_obj_filename(const string_list_t& args) {
+  std::string object_filename;
+
+  const auto check_no_existing_filename = [&] {
+    if (!object_filename.empty()) {
+      throw std::runtime_error("Only a single target object file can be specified.");
+    }
+  };
+
+  for (const auto& arg : args) {
+    if (arg_starts_with(arg, "Fo")) {
+      if (is_object_file(file::get_extension(arg))) {
+        check_no_existing_filename();
+        object_filename = drop_leading_colon(arg.substr(3));
+      } else if (arg.back() == '\\') {
+        // It's a directory, assume the obj file will be named the same as the input file but with
+        // .obj extension
+
+        // Last arg is always the input file? maybe??
+        auto inputFile = std::filesystem::path(args[args.size() - 1]);
+
+        if (is_source_file(inputFile.extension().string())) {
+          inputFile.replace_extension(".obj");
+
+          auto outputObjFile = std::filesystem::path(arg.substr(3)) / inputFile.filename();
+
+          check_no_existing_filename();
+          object_filename = outputObjFile.generic_string();
+        }
+      }
+    }
+  }
+
+  if (!object_filename.empty()) {
+    debug::log(debug::DEBUG) << "try_get_obj_filename(" << args.get_flattened()
+                             << ") = " << object_filename
+                             << ", abs = " << std::filesystem::absolute(object_filename);
+  }
+
+  return object_filename;
+}
+
+std::string get_obj_filename(const string_list_t& args) {
+  std::string object_filename = try_get_obj_filename(args);
+
+  if (object_filename.empty()) {
+    throw std::runtime_error("Unable to get the target object file.");
+  }
+
+  return object_filename;
 }
 
 string_list_t get_include_files(const std::string& std_err) {
@@ -188,6 +273,10 @@ void msvc_wrapper_t::resolve_args() {
       m_args += arg;
     }
   }
+
+  for (auto& arg : m_args) {
+    resolve_env_vars(arg);
+  }
 }
 
 bool msvc_wrapper_t::can_handle_command() {
@@ -204,19 +293,7 @@ string_list_t msvc_wrapper_t::get_capabilities() {
 
 std::map<std::string, expected_file_t> msvc_wrapper_t::get_build_files() {
   std::map<std::string, expected_file_t> files;
-  auto found_object_file = false;
-  for (const auto& arg : m_args) {
-    if (arg_starts_with(arg, "Fo") && is_object_file(file::get_extension(arg))) {
-      if (found_object_file) {
-        throw std::runtime_error("Only a single target object file can be specified.");
-      }
-      files["object"] = {drop_leading_colon(arg.substr(3)), true};
-      found_object_file = true;
-    }
-  }
-  if (!found_object_file) {
-    throw std::runtime_error("Unable to get the target object file.");
-  }
+  files["object"] = {get_obj_filename(m_args), true};
   return files;
 }
 
@@ -296,18 +373,16 @@ string_list_t msvc_wrapper_t::get_input_files() {
 std::string msvc_wrapper_t::preprocess_source() {
   // Check if this is a compilation command that we support.
   auto is_object_compilation = false;
-  auto has_object_output = false;
+  const bool has_object_output = !try_get_obj_filename(m_args).empty();
   for (const auto& arg : m_args) {
     if (arg_equals(arg, "c")) {
       is_object_compilation = true;
-    } else if (arg_starts_with(arg, "Fo") && (is_object_file(file::get_extension(arg)))) {
-      has_object_output = true;
     } else if (arg_equals(arg, "Zi") || arg_equals(arg, "ZI")) {
       throw std::runtime_error("PDB generation is not supported.");
     }
   }
   if ((!is_object_compilation) || (!has_object_output)) {
-    throw std::runtime_error("Unsupported complation command.");
+    throw std::runtime_error("Unsupported compilation command.");
   }
 
   // Disable unwanted printing of source file name in Visual Studio.
@@ -317,7 +392,11 @@ std::string msvc_wrapper_t::preprocess_source() {
   const auto preprocessor_args = make_preprocessor_cmd(m_args, m_active_capabilities.direct_mode());
   auto result = sys::run(preprocessor_args);
   if (result.return_code != 0) {
-    throw std::runtime_error("Preprocessing command was unsuccessful.");
+    std::string msgBuf = "Preprocessing command was unsuccessful with exit code ";
+    msgBuf += std::to_string(result.return_code);
+    msgBuf += ". Preprocessor command: ";
+    msgBuf += preprocessor_args.get_flattened();
+    throw std::runtime_error(msgBuf);
   }
 
   if (m_active_capabilities.direct_mode()) {
@@ -336,7 +415,44 @@ string_list_t msvc_wrapper_t::get_implicit_input_files() {
 sys::run_result_t msvc_wrapper_t::run_for_miss() {
   // Capture printed source file name (stdout) in cache entry.
   scoped_unset_env_t scoped_off(ENV_VS_OUTPUT_REDIRECTION);
+
+#ifdef _WIN32
+  // We need expanded env vars, even in response files.
+  // We need to generate our own response file for this case.
+
+  std::filesystem::path tempRspFile =
+      std::filesystem::temp_directory_path() /
+      ("buildcache_"s + std::to_string(GetCurrentProcessId()) + ".rsp");
+
+  std::string tempRspFileContents;
+  for (size_t i = 1; i < m_args.size(); i++) {
+    const std::string& curArg = m_args[i];
+    tempRspFileContents += curArg;
+
+    if (curArg == "/D") {
+      tempRspFileContents += ' ';
+    } else {
+      tempRspFileContents += '\n';
+    }
+  }
+
+  bcache::file::write(tempRspFileContents, tempRspFile.string());
+
+  debug::log(debug::DEBUG) << "Generated new response file at " << tempRspFile;
+
+  string_list_t progArgs;
+  progArgs += m_args[0];
+  progArgs += "@"s + tempRspFile.string();
+
+  auto result = sys::run_with_prefix(progArgs, false);
+
+  std::filesystem::remove(tempRspFile);
+
+  return result;
+  
+#else
   return program_wrapper_t::run_for_miss();
+#endif
 }
 
 }  // namespace bcache

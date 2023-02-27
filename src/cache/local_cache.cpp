@@ -518,7 +518,7 @@ void local_cache_t::add(const std::string& hash,
       const auto& source_path = expected_files.at(file_id).path();
       const auto target_path = file::append_path(cache_entry_path, file_id);
       if (entry.compression_mode() == cache_entry_t::comp_mode_t::ALL) {
-        debug::log(debug::DEBUG) << "Compressing " << source_path << " => " << target_path;
+        debug::log(debug::INFO) << "Compressing " << source_path << " => " << target_path;
         comp::compress_file(source_path, target_path);
       } else if (allow_hard_links) {
         file::link_or_copy(source_path, target_path);
@@ -530,6 +530,7 @@ void local_cache_t::add(const std::string& hash,
     // Create a cache entry file.
     const auto cache_entry_file_name = file::append_path(cache_entry_path, CACHE_ENTRY_FILE_NAME);
     file::write(entry.serialize(), cache_entry_file_name);
+    debug::log(debug::DEBUG) << "Stored " << hash << " into local cache.";
   }
 
   // Occassionally perform housekeeping. We do it here, since:
@@ -545,27 +546,32 @@ std::pair<cache_entry_t, file_lock_t> local_cache_t::lookup(const std::string& h
   const auto cache_entry_path = hash_to_cache_entry_path(hash);
 
   try {
-    // If the cache parent dir does not exist yet, we can't possibly have a cache hit.
-    // Note: This is mostly a trick to avoid irrelevant error log printouts from the file_lock_t
-    // constructor later on.
-    const auto cache_entry_parent_path = file::get_dir_part(cache_entry_path);
-    if (!file::dir_exists(cache_entry_parent_path)) {
-      throw std::runtime_error("Cache entry parent dir does not exist.");
-    }
+    try {
+      // If the cache parent dir does not exist yet, we can't possibly have a cache hit.
+      // Note: This is mostly a trick to avoid irrelevant error log printouts from the file_lock_t
+      // constructor later on.
+      const auto cache_entry_parent_path = file::get_dir_part(cache_entry_path);
+      if (!file::dir_exists(cache_entry_parent_path)) {
+        throw std::runtime_error("Cache entry parent dir does not exist.");
+      }
 
-    // Acquire a scoped lock for the cache entry.
-    file_lock_t lock{cache_entry_file_lock_path(cache_entry_path),
-                     file_lock_t::to_remote_t(config::remote_locks())};
-    if (!lock.has_lock()) {
-      throw std::runtime_error("Unable to acquire a cache entry lock for reading.");
-    }
+      // Acquire a scoped lock for the cache entry.
+      file_lock_t lock{cache_entry_file_lock_path(cache_entry_path),
+                       file_lock_t::to_remote_t(config::remote_locks())};
+      if (!lock.has_lock()) {
+        throw std::runtime_error("Unable to acquire a cache entry lock for reading.");
+      }
 
-    // Read the cache entry file (this will throw if the file does not exist - i.e. if we have a
-    // cache miss).
-    const auto cache_entry_file_name = file::append_path(cache_entry_path, CACHE_ENTRY_FILE_NAME);
-    const auto entry_data = file::read(cache_entry_file_name);
-    update_stats(hash, cache_stats_t::local_hit());
-    return std::make_pair(cache_entry_t::deserialize(entry_data), std::move(lock));
+      // Read the cache entry file (this will throw if the file does not exist - i.e. if we have a
+      // cache miss).
+      const auto cache_entry_file_name = file::append_path(cache_entry_path, CACHE_ENTRY_FILE_NAME);
+      const auto entry_data = file::read(cache_entry_file_name);
+      update_stats(hash, cache_stats_t::local_hit());
+      return std::make_pair(cache_entry_t::deserialize(entry_data), std::move(lock));
+    } catch (const std::exception& e) {
+      debug::log(debug::WARNING) << "Cache lookup failure for (" << hash << "): " << e.what();
+      throw;
+    }
   } catch (...) {
     update_stats(hash, cache_stats_t::local_miss());
     return std::make_pair(cache_entry_t(), file_lock_t());

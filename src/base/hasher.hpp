@@ -113,6 +113,13 @@ public:
   /// @note This method must only be called once.
   hash_t final();
 
+  template<typename T>
+  static hash_t single(T&& arg) {
+    hasher_t hash;
+    hash.update(std::forward<T>(arg));
+    return hash.final();
+  }
+
 private:
   /// @brief Update the hash with data from an AR archive.
   /// @param data The raw AR data.

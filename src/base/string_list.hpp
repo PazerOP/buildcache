@@ -88,11 +88,11 @@ public:
   }
 
   std::string& operator[](const size_t idx) {
-    return m_strings[idx];
+    return m_strings.at(idx);
   }
 
   const std::string& operator[](const size_t idx) const {
-    return m_strings[idx];
+    return m_strings.at(idx);
   }
 
   string_list_t& operator+=(const std::string& str) {
@@ -145,6 +145,18 @@ public:
 
   const_iterator cend() const {
     return m_strings.cend();
+  }
+
+  std::string get_flattened() const {
+    std::string flattened;
+    for (const std::string& str : m_strings) {
+      if (!flattened.empty())
+        flattened += ' ';
+
+      flattened += str;
+    }
+
+    return flattened;
   }
 
 private:
