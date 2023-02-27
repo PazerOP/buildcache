@@ -420,14 +420,18 @@ sys::run_result_t msvc_wrapper_t::run_for_miss() {
   // We need expanded env vars, even in response files.
   // We need to generate our own response file for this case.
 
-  std::filesystem::path tempRspFile =
-      std::filesystem::temp_directory_path() /
-      ("buildcache_"s + std::to_string(GetCurrentProcessId()) + ".rsp");
-
   std::string tempRspFileContents;
   for (size_t i = 1; i < m_args.size(); i++) {
     const std::string& curArg = m_args[i];
+
+    const bool hasSpaces = curArg.find_first_of(" \t\n\v\f\r") != std::string::npos;
+    if (hasSpaces)
+      tempRspFileContents += '"';
+
     tempRspFileContents += curArg;
+
+    if (hasSpaces)
+      tempRspFileContents += '"';
 
     if (curArg == "/D") {
       tempRspFileContents += ' ';
@@ -435,18 +439,29 @@ sys::run_result_t msvc_wrapper_t::run_for_miss() {
       tempRspFileContents += '\n';
     }
   }
+  
+  bcache::sys::run_result_t result;
+  if (tempRspFileContents.size() > 30000) {
+    // Use a response file, just to be safe
+    std::filesystem::path tempRspFile =
+        std::filesystem::temp_directory_path() /
+        ("buildcache_"s + std::to_string(GetCurrentProcessId()) + ".rsp");
 
-  bcache::file::write(tempRspFileContents, tempRspFile.string());
+    bcache::file::write(tempRspFileContents, tempRspFile.string());
 
-  debug::log(debug::DEBUG) << "Generated new response file at " << tempRspFile;
+    debug::log(debug::DEBUG) << "Generated new response file at " << tempRspFile;
 
-  string_list_t progArgs;
-  progArgs += m_args[0];
-  progArgs += "@"s + tempRspFile.string();
+    string_list_t progArgs;
+    progArgs += m_args[0];
+    progArgs += "@"s + tempRspFile.string();
 
-  auto result = sys::run_with_prefix(progArgs, false);
+    result = sys::run_with_prefix(progArgs, false);
 
-  std::filesystem::remove(tempRspFile);
+    std::filesystem::remove(tempRspFile);
+  } else {
+    // Probably ok just sending args normally
+    result = sys::run_with_prefix(m_args);
+  }
 
   return result;
   
