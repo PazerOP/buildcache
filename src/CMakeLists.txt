@@ -41,8 +41,18 @@ if(MINGW)
 endif()
 
 if(MSVC)
-  # Avoid CRT secure warnings when using MSVC.
-  add_definitions(-D_CRT_SECURE_NO_WARNINGS)
+    # Avoid CRT secure warnings when using MSVC.
+    add_definitions(-D_CRT_SECURE_NO_WARNINGS)
+
+    if (MSVC)
+        if (CMAKE_BUILD_TYPE EQUAL "DEBUG")
+            set_property(DIRECTORY PROPERTY
+                MSVC_RUNTIME_LIBRARY MultiThreadedDebug)
+        else()
+            set_property(DIRECTORY PROPERTY
+                MSVC_RUNTIME_LIBRARY MultiThreaded)
+        endif()
+    endif()
 endif()
 
 # Thrid party libraries used by BuildCache.
