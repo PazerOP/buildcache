@@ -239,6 +239,9 @@ bool program_wrapper_t::handle_command(int& return_code) {
     } else {
       debug::log(debug::WARNING) << "Not adding cache entry (" << hash
                               << "), program exited with code " << result.return_code << ".";
+
+      debug::log(debug::DEBUG) << "stdout: " << result.std_out;
+      debug::log(debug::DEBUG) << "stderr: " << result.std_err;
     }
 
     // Everything's ok!

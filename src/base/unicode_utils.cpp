@@ -18,6 +18,7 @@
 //--------------------------------------------------------------------------------------------------
 
 #include <base/unicode_utils.hpp>
+#include <base/debug_utils.hpp>
 
 // The codecvt routines are buggy on some systems, so we fall back to a custom routine instead if
 // that is the case.
@@ -31,6 +32,11 @@
 #else
 #include <cstdint>
 #endif  // USE_CPP11_CODECVT
+
+#ifdef _WIN32
+#include <Windows.h>  // IsTextUnicode
+#undef ERROR
+#endif
 
 namespace bcache {
 namespace {
@@ -137,7 +143,8 @@ std::string ucs2_to_utf8(const wchar_t* begin, const wchar_t* end) {
       return std::string();
     }
     return conv.to_bytes(begin, end);
-  } catch (...) {
+  } catch (const std::exception& e) {
+    bcache::debug::log(bcache::debug::ERROR) << __func__ << " failed! " << e.what();
     return std::string();
   }
 }
@@ -146,8 +153,38 @@ std::wstring utf8_to_ucs2(const std::string& str8) {
   std::wstring_convert<std::codecvt_utf8<wchar_t> > conv;
   try {
     return conv.from_bytes(str8);
-  } catch (...) {
-    return std::wstring();
+  } catch (const std::exception& e) {
+
+#ifdef _WIN32
+    // If we're on windows, random stuff might already be ucs2.
+    INT unicodeTests = 0xFFFFFFFF;
+    if (IsTextUnicode(str8.data(), str8.size(), &unicodeTests)) {
+
+      const wchar_t* reinterpreted = reinterpret_cast<const wchar_t*>(str8.data());
+
+      size_t wideLength = str8.size() / 2;
+      size_t startOffset = 0;
+      if (unicodeTests & IS_TEXT_UNICODE_SIGNATURE)
+      {
+        startOffset = 1;
+        wideLength - 1;
+      }
+
+      std::wstring converted(reinterpreted + startOffset, reinterpreted + wideLength);
+
+        bcache::debug::log(bcache::debug::DEBUG)
+            << __func__
+            << " failed to convert, but Windows IsTextUnicode "
+               "indicated this string was already ucs-2. Reinterpreted as: "
+            << ucs2_to_utf8(converted);
+
+        return converted;
+    } else
+#endif
+    {
+      bcache::debug::log(bcache::debug::ERROR) << __func__ << " failed! " << e.what();
+      return std::wstring();
+    }
   }
 }
 #else
