@@ -34,14 +34,19 @@ namespace bcache {
 
 string_list_t::string_list_t(const std::string& str, const std::string& delimiter) {
   std::string::size_type current_str_start = 0U;
+  std::string substr;
   while (current_str_start < str.size()) {
     const auto pos = str.find(delimiter, current_str_start);
     if (pos == std::string::npos) {
-      m_strings.emplace_back(str.substr(current_str_start));
+      substr = str.substr(current_str_start);
       current_str_start = str.size();
     } else {
-      m_strings.emplace_back(str.substr(current_str_start, pos - current_str_start));
+      substr = str.substr(current_str_start, pos - current_str_start);
       current_str_start = pos + 1;
+    }
+
+    if (!substr.empty()) {
+      m_strings.emplace_back(std::move(substr));
     }
   }
 }
