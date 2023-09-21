@@ -325,9 +325,6 @@ std::unique_ptr<bcache::program_wrapper_t> find_suitable_wrapper(
   std::exit(return_code);
 }
 
-#include <Windows.h>
-#undef ERROR
-
 [[noreturn]] void wrap_compiler_and_exit(int argc, const char** argv) {
   auto args = bcache::string_list_t(argc, argv);
   bool was_wrapped = false;
